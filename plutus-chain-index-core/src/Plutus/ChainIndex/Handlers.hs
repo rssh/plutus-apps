@@ -21,6 +21,7 @@ module Plutus.ChainIndex.Handlers
 import Cardano.Api qualified as C
 import Control.Applicative (Const (..))
 import Control.Lens (Lens', _Just, ix, view, (^?))
+import Control.Monad (foldM)
 import Control.Monad.Freer (Eff, Member, type (~>))
 import Control.Monad.Freer.Error (Error, throwError)
 import Control.Monad.Freer.Extras.Beam (BeamEffect (..), BeamableSqlite, addRowsInBatches, combined, deleteRows,
@@ -284,6 +285,38 @@ getTxoSetAtAddress pageQuery (toDbValue -> cred) = do
           let page = fmap fromDbValue txOutRefs'
           pure $ TxosResponse page
 
+appendBlocks ::
+    forall effs.
+    ( Member (State ChainIndexState) effs
+    , Member (Reader Depth) effs
+    , Member BeamEffect effs
+    , Member (Error ChainIndexError) effs
+    , Member (LogMsg ChainIndexLog) effs
+    )
+    => [ChainSyncBlock] -> Eff effs ()
+appendBlocks blocks = do
+    let
+        processBlock (utxoIndexState, txs, utxoStates) (Block tip_ transactions) = do
+            let newUtxoState = TxUtxoBalance.fromBlock tip_ (map fst transactions)
+            case UtxoState.insert newUtxoState utxoIndexState of
+                Left err -> do
+                    let reason = InsertionFailed err
+                    logError $ Err reason
+                    throwError reason
+                Right InsertUtxoSuccess{newIndex, insertPosition} -> do
+                    logDebug $ InsertionSuccess tip_ insertPosition
+                    return (newIndex, transactions ++ txs, newUtxoState : utxoStates)
+    oldIndex <- get @ChainIndexState
+    (newIndex, transactions, utxoStates) <- foldM processBlock (oldIndex, [], []) blocks
+    depth <- ask @Depth
+    case UtxoState.reduceBlockCount depth newIndex of
+      UtxoState.BlockCountNotReduced -> put newIndex
+      lbcResult -> do
+        put $ UtxoState.reducedIndex lbcResult
+        reduceOldUtxoDb $ UtxoState._usTip $ UtxoState.combinedState lbcResult
+    insert $ foldMap (\(tx, opt) -> if tpoStoreTx opt then fromTx tx else mempty) (reverse transactions)
+    insertUtxoDb utxoStates
+
 handleControl ::
     forall effs.
     ( Member (State ChainIndexState) effs
@@ -295,24 +328,8 @@ handleControl ::
     => ChainIndexControlEffect
     ~> Eff effs
 handleControl = \case
-    AppendBlock (Block tip_ transactions) -> do
-        oldIndex <- get @ChainIndexState
-        let newUtxoState = TxUtxoBalance.fromBlock tip_ (map fst transactions)
-        case UtxoState.insert newUtxoState oldIndex of
-            Left err -> do
-                let reason = InsertionFailed err
-                logError $ Err reason
-                throwError reason
-            Right InsertUtxoSuccess{newIndex, insertPosition} -> do
-                depth <- ask @Depth
-                case UtxoState.reduceBlockCount depth newIndex of
-                  UtxoState.BlockCountNotReduced -> put newIndex
-                  lbcResult -> do
-                    put $ UtxoState.reducedIndex lbcResult
-                    reduceOldUtxoDb $ UtxoState._usTip $ UtxoState.combinedState lbcResult
-                insert $ foldMap (\(tx, opt) -> if tpoStoreTx opt then fromTx tx else mempty) transactions
-                insertUtxoDb newUtxoState
-                logDebug $ InsertionSuccess tip_ insertPosition
+    AppendBlock block -> appendBlocks [block]
+    AppendBlocks blocks -> appendBlocks blocks
     Rollback tip_ -> do
         oldIndex <- get @ChainIndexState
         case TxUtxoBalance.rollback tip_ oldIndex of
@@ -359,17 +376,19 @@ insertUtxoDb ::
     ( Member BeamEffect effs
     , Member (Error ChainIndexError) effs
     )
-    => UtxoState.UtxoState TxUtxoBalance
+    => [UtxoState.UtxoState TxUtxoBalance]
     -> Eff effs ()
-insertUtxoDb (UtxoState.UtxoState _ TipAtGenesis) = throwError $ InsertionFailed UtxoState.InsertUtxoNoTip
-insertUtxoDb (UtxoState.UtxoState (TxUtxoBalance outputs inputs) tip)
-    = insert $ mempty
-        { tipRows = InsertRows $ catMaybes [toDbValue tip]
-        , unspentOutputRows = InsertRows $ UnspentOutputRow tipRowId . toDbValue <$> Set.toList outputs
-        , unmatchedInputRows = InsertRows $ UnmatchedInputRow tipRowId . toDbValue <$> Set.toList inputs
-        }
-        where
-            tipRowId = TipRowId (toDbValue (tipSlot tip))
+insertUtxoDb utxoStates = do
+
+-- insertUtxoDb (UtxoState.UtxoState _ TipAtGenesis) = throwError $ InsertionFailed UtxoState.InsertUtxoNoTip
+-- insertUtxoDb (UtxoState.UtxoState (TxUtxoBalance outputs inputs) tip)
+--     = insert $ mempty
+--         { tipRows = InsertRows $ catMaybes [toDbValue tip]
+--         , unspentOutputRows = InsertRows $ UnspentOutputRow tipRowId . toDbValue <$> Set.toList outputs
+--         , unmatchedInputRows = InsertRows $ UnmatchedInputRow tipRowId . toDbValue <$> Set.toList inputs
+--         }
+--         where
+--             tipRowId = TipRowId (toDbValue (tipSlot tip))
 
 reduceOldUtxoDb :: Member BeamEffect effs => Tip -> Eff effs ()
 reduceOldUtxoDb TipAtGenesis = pure ()
