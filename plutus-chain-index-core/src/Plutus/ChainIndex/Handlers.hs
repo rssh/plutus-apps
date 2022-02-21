@@ -374,23 +374,28 @@ batchSize = 400
 
 insertUtxoDb ::
     ( Member BeamEffect effs
-    , Member (Error ChainIndexError) effs
     )
     => [UtxoState.UtxoState TxUtxoBalance]
     -> Eff effs ()
 insertUtxoDb utxoStates = do
+    let
+        go acc (UtxoState.UtxoState _ TipAtGenesis) = acc
+        go (tipRows, unspentRows, unmatchedRows) (UtxoState.UtxoState (TxUtxoBalance outputs inputs) tip) =
+            let
+                tipRowId = TipRowId (toDbValue (tipSlot tip))
+                newTips = catMaybes [toDbValue tip]
+                newUnspent = UnspentOutputRow tipRowId . toDbValue <$> Set.toList outputs
+                newUnmatched = UnmatchedInputRow tipRowId . toDbValue <$> Set.toList inputs
+            in
+            ( newTips ++ tipRows
+            , newUnspent ++ unspentRows
+            , newUnmatched ++ unmatchedRows)
+        (tr, ur, umr) = foldl go ([], [], []) utxoStates
     insert $ mempty
-
-
--- insertUtxoDb (UtxoState.UtxoState _ TipAtGenesis) = throwError $ InsertionFailed UtxoState.InsertUtxoNoTip
--- insertUtxoDb (UtxoState.UtxoState (TxUtxoBalance outputs inputs) tip)
---     = insert $ mempty
---         { tipRows = InsertRows $ catMaybes [toDbValue tip]
---         , unspentOutputRows = InsertRows $ UnspentOutputRow tipRowId . toDbValue <$> Set.toList outputs
---         , unmatchedInputRows = InsertRows $ UnmatchedInputRow tipRowId . toDbValue <$> Set.toList inputs
---         }
---         where
---             tipRowId = TipRowId (toDbValue (tipSlot tip))
+        { tipRows = InsertRows $ reverse tr
+        , unspentOutputRows = InsertRows $ reverse ur
+        , unmatchedInputRows = InsertRows $ reverse umr
+        }
 
 reduceOldUtxoDb :: Member BeamEffect effs => Tip -> Eff effs ()
 reduceOldUtxoDb TipAtGenesis = pure ()
