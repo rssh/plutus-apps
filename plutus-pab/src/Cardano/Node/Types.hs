@@ -43,16 +43,16 @@ module Cardano.Node.Types
     )
         where
 
-import Cardano.BM.Data.Tracer (ToObject (..))
-import Cardano.BM.Data.Tracer.Extras (Tagged (..), mkObjectStr)
+import Cardano.BM.Data.Tracer (ToObject)
+import Cardano.BM.Data.Tracer.Extras (Tagged (Tagged), mkObjectStr)
 import Cardano.Chain (MockNodeServerChainState, fromEmulatorChainState)
 import Cardano.Protocol.Socket.Client qualified as Client
 import Cardano.Protocol.Socket.Mock.Client qualified as Client
 import Control.Lens (makeLenses, view)
-import Control.Monad.Freer.Extras.Log (LogMessage, LogMsg (..))
+import Control.Monad.Freer.Extras.Log (LogMessage, LogMsg)
 import Control.Monad.Freer.Reader (Reader)
 import Control.Monad.Freer.State (State)
-import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Default (Default, def)
 import Data.Map qualified as Map
@@ -63,17 +63,18 @@ import Data.Time.Units (Millisecond)
 import Data.Time.Units.Extra ()
 import GHC.Generics (Generic)
 import Ledger (Block, Tx, txId)
-import Ledger.CardanoWallet (WalletNumber (..))
+import Ledger.CardanoWallet (WalletNumber)
 import Ledger.TimeSlot (SlotConfig)
 import Plutus.Contract.Trace qualified as Trace
-import Prettyprinter (Pretty (..), pretty, viaShow, (<+>))
-import Servant.Client (BaseUrl (..), Scheme (..))
-import Wallet.Emulator (Wallet)
+import Prettyprinter (Pretty, pretty, viaShow, vsep, (<+>))
+import Servant.Client (BaseUrl (BaseUrl, baseUrlPort), Scheme (Http))
+import Wallet.Emulator (Wallet, WalletNumber (WalletNumber))
 import Wallet.Emulator qualified as EM
 import Wallet.Emulator.Chain (ChainControlEffect, ChainEffect, ChainEvent)
 import Wallet.Emulator.MultiAgent qualified as MultiAgent
 
-import Cardano.Api.NetworkId.Extra (NetworkIdWrapper (..), testnetNetworkId)
+import Cardano.Api.NetworkId.Extra (NetworkIdWrapper (unNetworkIdWrapper), testnetNetworkId)
+import Cardano.BM.Tracing (toObject)
 import Ledger.Fee (FeeConfig)
 import Plutus.PAB.Arbitrary ()
 
@@ -158,6 +159,14 @@ defaultPABServerConfig =
 
 instance Default PABServerConfig where
   def = defaultPABServerConfig
+
+instance Pretty PABServerConfig where
+  pretty PABServerConfig{ pscBaseUrl, pscSocketPath, pscNetworkId, pscKeptBlocks } =
+    vsep [ "Socket:" <+> pretty pscSocketPath
+         , "Network Id:" <+> viaShow (unNetworkIdWrapper pscNetworkId)
+         , "Port:" <+> viaShow (baseUrlPort pscBaseUrl)
+         , "Security Param:" <+> pretty pscKeptBlocks
+         ]
 
 -- | The types of handles varies based on the type of clients (mocked or
 -- real nodes) and we need a generic way of handling either type of response.
