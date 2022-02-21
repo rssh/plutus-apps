@@ -379,6 +379,8 @@ insertUtxoDb ::
     => [UtxoState.UtxoState TxUtxoBalance]
     -> Eff effs ()
 insertUtxoDb utxoStates = do
+    insert $ mempty
+
 
 -- insertUtxoDb (UtxoState.UtxoState _ TipAtGenesis) = throwError $ InsertionFailed UtxoState.InsertUtxoNoTip
 -- insertUtxoDb (UtxoState.UtxoState (TxUtxoBalance outputs inputs) tip)
